@@ -17,79 +17,30 @@
 # harder mode - write unit tests for your application
 # extremely hard mode - add the ability to email the final report (file) to an email address
 
-from os import system
+from os import system, path
 from time import sleep
 import datetime
 import math
 import smtplib, ssl
+import json
+from table import Table
 
-log_file = ''
-### email settings
-smtp_server = 'localhost'
-port = 1025
-email_report_from = 'pool_hall@somewhere.org'
-email_report_to = 'boss@somewhere.org'
-
-class Table:
-    def __init__(self,num):
-        self.num = num   # table number
-        self.status = False   # True = Occupied, False = Not Occupied
-        self.start = None   # time play started    
-    def open(self):
-        self.status = True
-        self.start = datetime.datetime.now()
-    def close(self):
-        # calc time played, cost
-        price = 30.0     # cost in $/hour
-        end = datetime.datetime.now()
-        time_played = end - self.start
-        # charge based on whole minutes played
-        cost = math.floor(time_played.total_seconds() / 60.0) * (price / 60.0)    
-        # append an entry to log file
-        self._write_log_entry(end, time_played, cost)
-        # fix table status
-        self.status = False
-        self.start = None
-
-    def _write_log_entry(self, end, time_played, cost):
-        global log_file
-        
-        # set filename and build log entry
-        log_file = f"{end.month:02d}-{end.day:02d}-{end.year}.txt"
-
-        # format start and end times
-        start_str = self.start.strftime("%I:%M:%S %p")
-        end_str = end.strftime("%I:%M:%S %p")
-
-        # format duration
-        hours_played = math.floor(time_played.total_seconds() / (60.0 * 60.0))
-        min_played = math.floor((time_played.total_seconds()-hours_played * 60 * 60) / 60.0)
-        duration_str = f"{hours_played:02d}:{min_played:02d}"
-
-        log_out = f"Table: {self.num} Start: {start_str} End: {end_str} Duration: {duration_str} Cost: ${cost:.2f}"
-        
-        print()
-        print(f"{log_out}")
-        print(f"Added to file: {log_file}")
-        sleep(2)
-
-        # append an entry to today's log file
-        with open(log_file,'a') as log_file_handle:
-            log_file_handle.write(f"{log_out}\n")
+def set_filename():
+    ### set the filename to today
+    today = datetime.datetime.now()
+    filename = f"{today.month:02d}-{today.day:02d}-{today.year}"
+    return filename
 
 def email_report():
     # function to email report
-    # test that log_file got initilized (a table was closed)
-    if len(log_file) > 0:
-        # log_file exists, read in the log file
-        with open(log_file) as log_file_handle:
-            log_file_content = log_file_handle.readlines()
-        msg = ""
-        for line in log_file_content:
-            msg = msg + line
-        msg = msg + '\n'
+
+    # test that a log_file exists (a table was closed today)
+    if path.exists(log_file):
+    # read the file contents into msg
+        with open(log_file) as file_obj:
+            contents = file_obj.read()
         # add an email header
-        msg = f"From: {email_report_from}\nTo: {email_report_to}\nSubject: {log_file}\n\n" + msg
+        msg = f"From: {email_report_from}\nTo: {email_report_to}\nSubject: {log_file}\n\n{contents}"
         # connect to local server and send email
         try:
             server = smtplib.SMTP(smtp_server, port)
@@ -110,13 +61,46 @@ def email_report():
         print("No log file. Please close a table first.")
         sleep(2)
 
-# list of tables to manage
-tables = []
-for i in range(12):
-    table = Table(i+1)
-    tables.append(table)
+def write_state(tables):
+    out_state = []
+    for table in tables:
+        out_state.append(table.__dict__())
+    with open(state_file, 'w') as file_obj:
+        json.dump(out_state,file_obj)
 
-# main UI loop
+def read_state():
+    tables = []
+    with open(state_file) as file_obj:
+        in_state = json.load(file_obj)
+    for d in in_state:
+        table = Table.create_from_json(d)
+        tables.append(table)
+    return tables
+
+### set the log file and state file names
+log_file = f"{set_filename()}.txt"
+state_file = f"{set_filename()}.json"
+
+### restart code - FIX THIS WHEN WRITE STATE WORKING!
+if path.exists(state_file):
+    # i've already been running today - create tables from the JSON file
+    with open(state_file) as file_obj:
+        d = json.load(file_obj)
+    tables = read_state()
+else:
+    # we're good to start with all tables open - will create state file for today on first table opening
+    tables = []
+    for i in range(12):
+        table = Table(i+1)
+        tables.append(table)
+
+### email settings
+smtp_server = 'localhost'
+port = 1025
+email_report_from = 'pool_hall@somewhere.org'
+email_report_to = 'boss@somewhere.org'
+
+### main UI loop
 while True:
     system('clear')
     print ("Pool Table Management")
@@ -127,12 +111,6 @@ while True:
     print(f"Status as of {current_time_str} - ")
     for table in tables:
         if table.status:
-            ### --- start of test code section
-            ### test code section for hours vs. minutes duration display
-            ### force start time to be 2:20 before current time; test assumes current minutes > 20 !!
-            #curr_time = datetime.datetime.now()
-            #table.start = datetime.datetime(2019, 11, 12, hour = curr_time.hour - 2, minute = curr_time.minute - 20, second = 0)
-            ### --- end of test code section ---
             start_time_str = table.start.strftime("%I:%M:%S %p")
             time_played = datetime.datetime.now() - table.start
             min_played = math.floor(time_played.total_seconds() / 60.0)
@@ -167,18 +145,24 @@ while True:
         # refresh list
         continue
     elif choice == 'e':
-        # email report
+        # email the log file
         email_report()
         continue
     elif choice in ['1','2','3','4','5','6','7','8','9','10','11','12']:
         # user wants to open or close out a table
         table = tables[int(choice)-1]
         if table.status:
-            # table is open so close it out
-            table.close()
+            # table is occupied so close it out
+            msg = table.close(log_file)
+            write_state(tables)
+            print()
+            print(f"{msg}")
+            print(f"Added to file: {log_file}")
+            sleep(2)
         else:
             # table is not occupied so start game
             table.open()
+            write_state(tables)
         continue
     else:
         # don't understand - message user, wait 2 seconds, refresh
